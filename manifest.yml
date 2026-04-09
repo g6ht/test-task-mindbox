@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  labels:
+    app: app
+spec:
+  replicas: 2 # минимально хотя бы 2 пода для отказоустойчивости
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      topologySpreadConstraints: # для распределения подов между зонами (чтобы не было много подов в одной зоне/на одной ноде) тоже + отказоустойчивость
+        - maxSkew: 1 # между зонами должна быть разница в 1 под, как раз чтобы все поды не запускались в одной зоне
+          topologyKey: "topology.kubernetes.io/zone" 
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: app
+      containers:
+      - name: app
+        image: app-image:latest
+        resources:
+          requests:
+            cpu: "100m" # в задании сказано, что потребление в районе 0.1 CPU, поэтому взяла это значение как минимум
+            memory: "128Mi"
+          limits:
+            cpu: "600m" # запас на первые запросы
+            memory: "128Mi"
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 80
+          failureThreshold: 5
+          periodSeconds: 5 # в итоге получится, что будет максимум 5 проверок каждые 5 секунд, 25 секунд точно должно хватить для запуска
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler # объект, который будет автоматически создавать больше подов при большей нагрузке (потому что нагрузка днем больше, ночью меньше)
+metadata:
+  name: app-scaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app
+  minReplicas: 2 # минимально хотя бы 2 пода должно быть
+  maxReplicas: 4 # "по результатам нагрузочного теста известно, что 4 пода справляются с пиковой нагрузкой", поэтому взяла это значение за максимум
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu # увеличиваться количество подов будет в зависимости от загрузки процессора, если загрузка приближается к 0.1 CPU, надо увеличивать
+      target:
+        type: Utilization
+        averageUtilization: 70
